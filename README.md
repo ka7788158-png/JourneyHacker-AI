@@ -1,25 +1,3 @@
-# JourneyHacker-AI
-
-1. create the virtual environment 
-
-```bash
-conda create -n JourneyHacker python=3.11
-```
-
-2. Activate the Environment 
-
-
-```bash
-conda activate JourneyHacker
-```
-
-3, Install the requirements
-
-```bash
-pip install -r requirements.txt
-```
-
-
 # ✈️ JourneyHacker-AI — A Multi-Agent Travel Planner with LangGraph
 
 An open-source AI travel planner that turns a natural-language trip request into a practical travel plan with flight suggestions, hotel ideas, and a day-by-day itinerary. The project uses a multi-agent workflow built with LangGraph, LangChain, and FastAPI.
@@ -101,7 +79,7 @@ pip install -r requirements.txt
 ```
 
 
-or 
+# OR 
 
 
 1. create the virtual environment 
@@ -112,6 +90,12 @@ conda create -n JourneyHacker python=3.11
 2. Activate the Environment 
 ```bash
 conda activate JourneyHacker
+```
+
+3. Install the requirements
+
+```bash
+pip install -r requirements.txt
 ```
 
 ## Running the App
