@@ -321,10 +321,15 @@ graph.add_edge("final_agent", END)
 # =======================
 DATABASE_URL = get_database_url()
 
+# Try to get the URL from Render's environment, but fallback to the direct string if it fails
+fallback_url = "postgresql://kavya_agrawal:OZePWUX7WHscY1IAgao4EcYv6jDbbwLa@dpg-daepl7n40ujc7387qhp0-a.oregon-postgres.render.com/agentmemory_h4vj?sslmode=require"
+db_url = os.environ.get("DATABASE_URL", fallback_url) 
+
+# Make exactly ONE connection using db_url
 _conn = psycopg.connect( 
-    DATABASE_URL, 
-    autocommit = True, 
-    row_factory = dict_row
+    db_url, 
+    autocommit=True, 
+    row_factory=dict_row
 )
 
 checkpointer = PostgresSaver(_conn)
