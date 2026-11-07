@@ -1,13 +1,5 @@
-# lets test our backend file
+import asyncio 
+from mcp_client_test import get_all_tools
 
-from backend import run_travel_agent
-
-user_input = input("Enter travel request: ")
-
-response = run_travel_agent(
-    user_input=user_input, 
-    thread_id="test_user"
-)
-
-print("\n FINAL RESPONSE:\n")
-print(response["answer"])
+if __name__ == "__main__":
+    asyncio.run(get_all_tools())

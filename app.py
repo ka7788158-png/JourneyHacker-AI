@@ -10,6 +10,11 @@ from pydantic import BaseModel
 
 from backend import run_travel_agent
 
+# This is to allow nested event loops for assync calls in FastAPI
+import nest_asyncio
+nest_asyncio.apply()
+
+
 BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(
@@ -33,7 +38,7 @@ templates = Jinja2Templates(
 
 
 class TravelRequest(BaseModel):
-    message: str
+    message: str # whenever we recieve any query that will come here
     thread_id: str | None = None
 
 
@@ -52,24 +57,24 @@ async def travel_planner(request_data: TravelRequest):
     try:
         user_message = request_data.message.strip()
 
-        if not user_message:
-            return JSONResponse(
+        if not user_message: # agar user message nahi hai 
+            return JSONResponse( # provided by FastAPI
                 status_code=400,
                 content={
-                    "success": False,
+                    "success": False, 
                     "error": "Message cannot be empty."
                 }
             )
 
-        result = run_travel_agent(
+        result = run_travel_agent( # imported from backend
             user_input=user_message,
-            thread_id=request_data.thread_id
+            thread_id=request_data.thread_id 
         )
 
         return JSONResponse(
             content={
                 "success": True,
-                "thread_id": result["thread_id"],
+                "thread_id": result["thread_id"], # result will be kind of dictionary, we are taking out some of the things which we want from it 
                 "answer": result["answer"],
                 "flight_results": result["flight_results"],
                 "hotel_results": result["hotel_results"],
@@ -78,7 +83,7 @@ async def travel_planner(request_data: TravelRequest):
             }
         )
 
-    except Exception as e:
+    except Exception as e: # if any other error, it will raise an error
         print("ERROR:", e)
         traceback.print_exc()
 
