@@ -1,4 +1,4 @@
-import os 
+import os
 import certifi
 from dotenv import load_dotenv
 
@@ -10,88 +10,78 @@ os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 from typing import TypedDict, Annotated
 import operator
 import uuid
-import asyncio # used for parallel running
-import psycopg # it is a python library used for connection of python file with sql 
+import asyncio  # used for running the async MCP calls
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool  # pool instead of one global connection
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.postgres import PostgresSaver
 from langchain_core.messages import (
-    AnyMessage, 
-    HumanMessage, 
-    AIMessage, 
-    SystemMessage
+    AnyMessage,
+    HumanMessage,
+    AIMessage,
+    SystemMessage,
 )
 
 from langchain_groq import ChatGroq
-# we are not going to use these tools anymore instead we will use MCP 
-# from tools.tavily_tool import tavily_search
-# from tools.flight_tool import search_flights
-from mcp_client import tavily_mcp_search, aviation_mcp_call, extract_destination , forecast_mcp_search, weather_mcp_search
+from mcp_client import (
+    tavily_mcp_search,
+    aviation_mcp_call,
+    extract_destination,
+    forecast_mcp_search,
+    weather_mcp_search,
+)
 
+
+# =====================
+# DATABASE URL
+# =====================
 def get_database_url():
-    database_url = os.getenv("DATABASE_URL") # it is present in the environment
+    database_url = os.getenv("DATABASE_URL")  # comes from Render env vars / .env
 
     if not database_url:
         raise ValueError(
-            "DATABASE_UR; is missing. Please add your Render PostgreSQL External Database"
+            "DATABASE_URL is missing. Add your Render PostgreSQL Internal Database URL "
+            "to the DATABASE_URL environment variable."
         )
 
-    if "sslmode=" not in database_url: 
+    # Render Postgres needs SSL
+    if "sslmode=" not in database_url:
         separator = "&" if "?" in database_url else "?"
-        database_url  = f"{database_url}{separator}sslmode=require"
-        # we are actually adding sslmode=require at the last of our database url
-        # because we are going to be connected to our remote database server
+        database_url = f"{database_url}{separator}sslmode=require"
 
     return database_url
 
 
-# url = get_database_url()
-# print(url)
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
-    raise ValueError("Groq_API_KEY is missing. Please add it .")
+    raise ValueError("GROQ_API_KEY is missing. Please add it.")
 
 # =====================
-## LLM 
-# ================
-
+# LLM
+# =====================
 llm = ChatGroq(
-    model = "openai/gpt-oss-20b", 
-    api_key = GROQ_API_KEY
+    model="openai/gpt-oss-20b",
+    api_key=GROQ_API_KEY,
 )
 
-# =====================
-# STATE 
-# =====================
 
+# =====================
+# STATE
+# =====================
 class TravelState(TypedDict):
     messages: Annotated[list[AnyMessage], operator.add]
     user_query: str
-    flight_results:str
-    hotel_results:str
-    itinerary:str
-    llm_calls:int
+    flight_results: str
+    hotel_results: str
+    itinerary: str
+    llm_calls: int
     weather_results: str
 
-# ===================
-# Flight Agent -> we dont need it anymore now
-# =================== 
 
-# def flight_agent(state: TravelState): 
-#     query = state["user_query"]
-#     flight_data = search_flights(query)
-
-#     return {
-#         "flight_results" : flight_data, 
-#         "messages" : [
-#             AIMessage(content="Flight results fetched.")
-#         ], 
-#         "llm_calls" : state.get("llm_calls",0) + 1 # 0 -> initially my llm call is 0
-#     }
-
-# Flight Tool Router Prompt
+# =====================
+# Flight Agent
+# =====================
 FLIGHT_AGENT_PROMPT = """
 You are a travel flight expert.
 
@@ -117,161 +107,143 @@ Generate:
 Return concise travel guidance.
 """
 
-# Flight Agent
-def flight_agent(state: TravelState):
-    print("\nINSIDE FLIGHT AGENT\n") # this shows that app is currently using flight agent
 
-    query = state["user_query"] # from state we get user query 
+def flight_agent(state: TravelState):
+    print("\nINSIDE FLIGHT AGENT\n")
+
+    query = state["user_query"]
 
     try:
-
-        airports = asyncio.run(
-            aviation_mcp_call(
-                "list_airports" # this gives the list of airport , we used the already made mcp server for this
-            )
-        )
-
-        airlines = asyncio.run(
-            aviation_mcp_call(
-                "list_airlines"
-            )
-        )
-
+        airports = asyncio.run(aviation_mcp_call("list_airports"))
+        airlines = asyncio.run(aviation_mcp_call("list_airlines"))
 
         print("\nAIRPORTS:", airports)
         print("\nAIRLINES:", airlines)
 
         prompt = FLIGHT_AGENT_PROMPT.format(
-            # whatever we are writing here is going in prompt, which we have written above 
             query=query,
-            airport_data=str(airports)[:3000], # we kept it small , because we dont want api key to get finished
-            airline_data=str(airlines)[:3000]
+            airport_data=str(airports)[:3000],  # kept small to save tokens
+            airline_data=str(airlines)[:3000],
         )
 
         response = llm.invoke([
-            SystemMessage( # how we want the system to behave ?? 
-                content="You are an expert travel flight planner."
-            ),
-            HumanMessage(content=prompt)
+            SystemMessage(content="You are an expert travel flight planner."),
+            HumanMessage(content=prompt),
         ])
 
         flight_data = response.content
 
     except Exception as e:
-
         flight_data = f"Flight information unavailable: {str(e)}"
 
     return {
         "flight_results": flight_data,
-        "messages": [
-            AIMessage(
-                content="Flight recommendations generated"
-            )
-        ],
-        "llm_calls": state.get("llm_calls", 0) + 1 # this return how many times , we actually used LLM ?? 
+        "messages": [AIMessage(content="Flight recommendations generated")],
+        "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
 
-# ====================
+# =====================
 # Hotel Agent
-# ====================
-
+# =====================
 def hotel_agent(state: TravelState):
     query = f"Best hotels for {state['user_query']}"
-    # hotel_results = tavily_search(query) # we are going to use MCP instead of tools
-    hotel_results = asyncio.run(tavily_mcp_search(query))
+
+    try:
+        hotel_results = asyncio.run(tavily_mcp_search(query))
+    except Exception as e:
+        hotel_results = f"Hotel information unavailable: {str(e)}"
 
     return {
         "hotel_results": hotel_results,
-        "messages": [
-            AIMessage(content="Hotel information fetched.")
-        ],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "messages": [AIMessage(content="Hotel information fetched.")],
+        "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
-# Adding a Weather Agent
-def weather_agent(state : TravelState):
-    city = extract_destination(state["user_query"])
 
-    weather_data = asyncio.run(
-        weather_mcp_search(city)
-    )
+# =====================
+# Weather Agent
+# =====================
+def weather_agent(state: TravelState):
+    try:
+        city = extract_destination(state["user_query"])
 
-    forecast_data = asyncio.run(
-        forecast_mcp_search(city)
-    )
+        weather_data = asyncio.run(weather_mcp_search(city))
+        forecast_data = asyncio.run(forecast_mcp_search(city))
+
+        weather_text = f"""
+Current Weather:
+{weather_data}
+
+Forecast:
+{forecast_data}
+"""
+    except Exception as e:
+        weather_text = f"Weather information unavailable: {str(e)}"
 
     return {
-        "weather_results" : f"""
-        Current Weather:
-        {weather_data}
-
-        Forecast:
-        {forecast_data}
-""",
-        "messages" : [
-            AIMessage(
-                content = "Weather information fetched"
-            )
-        ]
+        "weather_results": weather_text,
+        "messages": [AIMessage(content="Weather information fetched")],
     }
 
 
-# ================ 
-# Itinerary agent -> creates day-wise itinerary, places to visit, activities
-# ================
-
-def itinerary_agent(state : TravelState):
+# =====================
+# Itinerary Agent
+# =====================
+def itinerary_agent(state: TravelState):
     prompt = f"""
-Create a complete travel itinerary. 
+Create a complete travel itinerary.
 
-User Query: 
+User Query:
 {state['user_query']}
 
 Flight Results:
 {state['flight_results']}
 
-Hotel Results: 
+Hotel Results:
 {state['hotel_results']}
 
 Weather Results:
 {state['weather_results']}
 
-Make the itinerary practical, budget-aware, and easy to follow. 
+Make the itinerary practical, budget-aware, and easy to follow.
 """
 
     response = llm.invoke([
-        SystemMessage(content = "You are an expert travel planner."),
-        HumanMessage(content = prompt)
+        SystemMessage(content="You are an expert travel planner."),
+        HumanMessage(content=prompt),
     ])
 
-    return{
-        "itinerary" : response.content, 
-        "messages" : [response], 
-        "llm_calls": state.get("llm_calls", 0) + 1
+    return {
+        "itinerary": response.content,
+        "messages": [response],
+        "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
-# ================
-# Final Response Agent
-# ================
 
+# =====================
+# Final Response Agent
+# =====================
 def final_agent(state: TravelState):
     final_prompt = f"""
-Generate the final travel response for the user. 
+Generate the final travel response for the user.
 
-User Request: 
+User Request:
 {state['user_query']}
 
-Flights: 
+Flights:
 {state['flight_results']}
 
-Hotels: 
+Hotels:
 {state['hotel_results']}
 
-Itinerary: 
+Weather:
+{state['weather_results']}
+
+Itinerary:
 {state['itinerary']}
 
-Format the final answer beautifully using these sections: 
+Format the final answer beautifully using these sections:
 1. Trip Summary
 2. Flight Information
 3. Hotel Suggestions
@@ -280,27 +252,27 @@ Format the final answer beautifully using these sections:
 6. Estimated Budget
 7. Final Recommendations
 
-Important: 
+Important:
 - Be clear and practical
 - Mention that live flight API may not provide ticket prices if pricing is unavailable
 - Include weather-based travel advice.
-- Keep the response useful for real travel planning. 
+- Keep the response useful for real travel planning.
 """
 
     response = llm.invoke([
-        SystemMessage(content = "You are a professional AI travel booking assistant."), 
-        HumanMessage(content=final_prompt)
+        SystemMessage(content="You are a professional AI travel booking assistant."),
+        HumanMessage(content=final_prompt),
     ])
 
-    return { 
-        "messages": [response], 
-        "llm_calls" : state.get("llm_calls", 0) + 1
+    return {
+        "messages": [response],
+        "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
-# ==================
-# Build Graph
-# ==================
 
+# =====================
+# Build Graph (all sequential now)
+# =====================
 graph = StateGraph(TravelState)
 
 graph.add_node("flight_agent", flight_agent)
@@ -312,57 +284,54 @@ graph.add_node("final_agent", final_agent)
 graph.add_edge(START, "flight_agent")
 graph.add_edge("flight_agent", "hotel_agent")
 graph.add_edge("hotel_agent", "weather_agent")
-graph.add_edge("hotel_agent", "itinerary_agent")
+graph.add_edge("weather_agent", "itinerary_agent")  # fixed: itinerary waits for weather
 graph.add_edge("itinerary_agent", "final_agent")
 graph.add_edge("final_agent", END)
 
-# ======================
-# PostgreSQL Checkpointer
-# =======================
+# =====================
+# PostgreSQL Checkpointer (connection pool)
+# =====================
 DATABASE_URL = get_database_url()
 
-# Try to get the URL from Render's environment, but fallback to the direct string if it fails
-# Force the app to use ONLY the Render database URL
-db_url = "postgresql://kavya_agrawal:OZePWUX7WHscY1IAgao4EcYv6jDbbwLa@dpg-daepl7n40ujc7387qhp0-a.oregon-postgres.render.com/agentmemory_h4vj?sslmode=require"
-
-_conn = psycopg.connect( 
-    db_url, 
-    autocommit=True, 
-    row_factory=dict_row
+pool = ConnectionPool(
+    conninfo=DATABASE_URL,
+    min_size=1,
+    max_size=5,
+    kwargs={
+        "autocommit": True,
+        "row_factory": dict_row,
+        "prepare_threshold": 0,
+    },
+    check=ConnectionPool.check_connection,  # drops dead connections automatically
+    open=True,
 )
 
-checkpointer = PostgresSaver(_conn)
+checkpointer = PostgresSaver(pool)
 checkpointer.setup()
 
-travel_graph = graph.compile(checkpointer = checkpointer)
+travel_graph = graph.compile(checkpointer=checkpointer)
 
-# ======================
-# function for FastAPI
-# ======================
 
+# =====================
+# Function for FastAPI
+# =====================
 def run_travel_agent(user_input: str, thread_id: str | None = None):
     if not thread_id:
         thread_id = f"user_{uuid.uuid4().hex}"
 
-    config = {
-        "configurable": {
-            "thread_id": thread_id
-        }
-    }
+    config = {"configurable": {"thread_id": thread_id}}
 
     result = travel_graph.invoke(
         {
-            "messages": [
-                HumanMessage(content=user_input)
-            ],
+            "messages": [HumanMessage(content=user_input)],
             "user_query": user_input,
             "flight_results": "",
             "hotel_results": "",
             "weather_results": "",
             "itinerary": "",
-            "llm_calls": 0
+            "llm_calls": 0,
         },
-        config=config
+        config=config,
     )
 
     final_answer = result["messages"][-1].content
